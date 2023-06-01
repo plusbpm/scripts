@@ -19,6 +19,7 @@ Di() {
 }
 
 msg() {
+    log $1
     MSGBOX_HEIGHT=$((`tput lines` * 2 / 3))
     MSGBOX_WIDTH=$((`tput cols` * 2 / 3))
     Di --msgbox "$1" $MSGBOX_HEIGHT $MSGBOX_WIDTH
@@ -122,35 +123,35 @@ stop_resolvconf() {
 }
 
 start() {
-    echo "start ..."
+    log "start ..."
     start_ssredir
     start_iptables
     start_iproute2
     start_resolvconf
     touch ./$STARTED_TMP
-    echo "start end"
+    log "start end"
 }
 
 stop() {
-    echo "stop ..."
+    log "stop ..."
     stop_resolvconf
     stop_iproute2
     stop_iptables
     stop_ssredir
     rm -f ./$STARTED_TMP
-    echo "stop end"
+    log "stop end"
 }
 
 restart() {
     stop
-    sleep 1
+    sleep 2
     start
 }
 
 read_current_location() {
-    echo "$BASE_API_URL/info?token=$TOKEN -o $USER_INFO_TMP"
-    curl "$BASE_API_URL/info?token=$TOKEN" -o $USER_INFO_TMP
-    echo ''
+    log "$BASE_API_URL/info?token=$TOKEN -o $USER_INFO_TMP"
+    curl -s "$BASE_API_URL/info?token=$TOKEN" -o $USER_INFO_TMP
+    log ''
     export RESULT_LOCATION=$(cat $USER_INFO_TMP | jq ".location" | sed 's/"//g')
     export REMOTE_IP=$(cat $USER_INFO_TMP | jq ".tokens.${RESULT_LOCATION}.accessUrl" | grep -Eo "([0-9]{1,3}\.){3}[0-9]{1,3}" | sed 's/"//g')
     export REMOTE_PORT=$(cat $USER_INFO_TMP | jq ".tokens.${RESULT_LOCATION}.port" | sed 's/"//g')
@@ -160,7 +161,7 @@ read_current_location() {
 }
 
 log() {
-    echo "$@" >> ./$LOG_TMP
+    echo `date` "$@" >> ./$LOG_TMP
 }
 
 read_available_locations() {
@@ -170,7 +171,7 @@ read_available_locations() {
     fi
     if [ ! -f $AVAILABLE_LOCATIONS_TMP ]; then 
         log "https://api.vanyavpn.com/web/v1/sync/available-locations"
-        curl https://api.vanyavpn.com/web/v1/sync/available-locations -o $AVAILABLE_LOCATIONS_TMP
+        curl -s https://api.vanyavpn.com/web/v1/sync/available-locations -o $AVAILABLE_LOCATIONS_TMP
         log ''
         LIST=$(cat "${AVAILABLE_LOCATIONS_TMP}" | jq -r '.[] | @base64')
         TOTAL=$(echo $LIST | wc -w)
@@ -194,6 +195,7 @@ read_available_locations() {
 }
 
 start_or_restart() {
+    log 'start_or_restart'
     if [ -f ./$STARTED_TMP ]; then
         restart
         exit 0
@@ -218,12 +220,12 @@ main() {
     NEXT_LOCATION=$(Di --menu 'Выбор локации' 0 0 $((`tput lines` / 2)) $LOCATION_ITEMS)
 
     if [ -z $NEXT_LOCATION ]; then
+        log 'Отмена выбора локации'
         tput reset
         exit 0
     fi
 
     if [ "$NEXT_LOCATION" == "off" ]; then
-        log "Stop VPN"
         stop
         exit 0
     fi
@@ -231,7 +233,6 @@ main() {
     read_current_location
 
     if  [ "$NEXT_LOCATION" == "on" ]; then
-        log "Start VPN"
         start_or_restart
         exit 0
     fi
@@ -239,14 +240,14 @@ main() {
     log NEXT_LOCATION=$NEXT_LOCATION
     if [ ! "$RESULT_LOCATION" == "$NEXT_LOCATION" ]; then
         log "$BASE_API_URL/location/change?token=$TOKEN&location=$NEXT_LOCATION"
-        curl "$BASE_API_URL/location/change?token=$TOKEN&location=$NEXT_LOCATION"
-        sleep 1
+        curl -s "$BASE_API_URL/location/change?token=$TOKEN&location=$NEXT_LOCATION"
+        sleep 3
         read_current_location
     fi
 
     start_or_restart
 }
 
-log `date` '============ START'
+log '============ START'
 main
-log `date` '------------ END \n'
+log '------------ END \n'
