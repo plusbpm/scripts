@@ -1,10 +1,18 @@
 #!/bin/bash
 
 BASE_API_URL=https://vvpn.loan/app/v1/user
+
+AVAILABLE_LOCATIONS_TMP=available_locations.tmp
 USER_INFO_TMP=user_info.json.tmp
-LOCATION_SWITCH_TMP=location_switch.tmp
 STARTED_TMP=vpn_started.tmp
 LOG_TMP=logs.tmp
+
+ACTION_ITEMS="on\
+    Включить\
+    off\
+    Выключить"
+. ./predefined_locations.sh
+LOCATION_ITEMS="$ACTION_ITEMS $LOCATION_ITEMS"
 
 Di() {
     dialog --backtitle "Дядя Ваня VPN" --clear --colors --stdout "$@"
@@ -140,15 +148,57 @@ restart() {
 }
 
 read_current_location() {
-    echo "$BASE_API_URL/info?token=$TOKEN" -o $USER_INFO_TMP
+    echo "$BASE_API_URL/info?token=$TOKEN -o $USER_INFO_TMP"
     curl "$BASE_API_URL/info?token=$TOKEN" -o $USER_INFO_TMP
+    echo ''
     export RESULT_LOCATION=$(cat $USER_INFO_TMP | jq ".location" | sed 's/"//g')
     export REMOTE_IP=$(cat $USER_INFO_TMP | jq ".tokens.${RESULT_LOCATION}.accessUrl" | grep -Eo "([0-9]{1,3}\.){3}[0-9]{1,3}" | sed 's/"//g')
     export REMOTE_PORT=$(cat $USER_INFO_TMP | jq ".tokens.${RESULT_LOCATION}.port" | sed 's/"//g')
     export REMOTE_PASSWORD=$(cat $USER_INFO_TMP | jq ".tokens.${RESULT_LOCATION}.password" | sed 's/"//g')
     export REMOTE_METHOD=$(cat $USER_INFO_TMP | jq ".tokens.${RESULT_LOCATION}.method" | sed 's/"//g')
-    echo RESULT_LOCATION=$RESULT_LOCATION REMOTE=$REMOTE_IP:$REMOTE_PORT REMOTE_PASSWORD=$REMOTE_PASSWORD REMOTE_METHOD=$REMOTE_METHOD
     rm -f $USER_INFO_TMP
+}
+
+log() {
+    echo "$@" >> ./$LOG_TMP
+}
+
+read_available_locations() {
+    TOO_OLD_LOCATIONS=$(find ./available_locations.tmp -mmin +120 -type f)
+    if [ ! -z "$TOO_OLD_LOCATIONS" ]; then 
+        rm -f $AVAILABLE_LOCATIONS_TMP
+    fi
+    if [ ! -f $AVAILABLE_LOCATIONS_TMP ]; then 
+        log "https://api.vanyavpn.com/web/v1/sync/available-locations"
+        curl https://api.vanyavpn.com/web/v1/sync/available-locations -o $AVAILABLE_LOCATIONS_TMP
+        log ''
+        LIST=$(cat "${AVAILABLE_LOCATIONS_TMP}" | jq -r '.[] | @base64')
+        TOTAL=$(echo $LIST | wc -w)
+
+        echo $ACTION_ITEMS > $AVAILABLE_LOCATIONS_TMP
+        (
+            for row in $LIST; do
+                CURRENT=$(($CURRENT + 1))
+                _jq() {
+                    echo ${row} | base64 --decode | jq -r ${1}
+                }
+                echo "\
+                    $(_jq '.value')\
+                    $(echo "$(_jq '.description') $(_jq '.speed')" | sed 's/ /\xc2\xa0/g')" >> $AVAILABLE_LOCATIONS_TMP
+                echo $((100 * $CURRENT / $TOTAL)) 
+            done
+        ) | dialog --gauge "Загрузка локаций" 0 0
+
+    fi
+    LOCATION_ITEMS=$(cat $AVAILABLE_LOCATIONS_TMP)
+}
+
+start_or_restart() {
+    if [ -f ./$STARTED_TMP ]; then
+        restart
+        exit 0
+    fi
+    start
 }
 
 main() {
@@ -164,146 +214,39 @@ main() {
         exit 0
     fi
 
+    read_available_locations
     NEXT_LOCATION=$(Di --menu 'Выбор локации' 0 0 $((`tput lines` / 2)) $LOCATION_ITEMS)
+
     if [ -z $NEXT_LOCATION ]; then
-        tput resetexit 0
-    fi
-    if [ "$NEXT_LOCATION" == "none" ]; then
-        echo "Stop VPN"
-        stop
-        rm -f ./$LOG_TMP
-        exit 0
-    fi
-    if  [ "$NEXT_LOCATION" == "current" ]; then
-        echo "Start VPN"
-        read_current_location
-        start
-        exit 0
-    fi
-    if [ -f ./$LOCATION_SWITCH_TMP ]; then
-        msg "Смена локации в процессе или не очищен файл индикатор '$LOCATION_SWITCH_TMP'"
         tput reset
         exit 0
     fi
-    touch ./$LOCATION_SWITCH_TMP
 
-    read_current_location
-
-    echo NEXT_LOCATION=$NEXT_LOCATION
-
-    if [ "$RESULT_LOCATION" == "$NEXT_LOCATION" ] && [ -f ./$STARTED_TMP ]; then
-        rm -f ./$LOCATION_SWITCH_TMP
-        msg "Выбранная локация уже активна и подключена, либо не удален файл $STARTED_TMP"
+    if [ "$NEXT_LOCATION" == "off" ]; then
+        log "Stop VPN"
+        stop
         exit 0
     fi
 
-    if [ "$RESULT_LOCATION" == "$NEXT_LOCATION" ] && [ ! -f ./$STARTED_TMP ]; then
-        rm -f $LOCATION_SWITCH_TMP
-        start
+    read_current_location
+
+    if  [ "$NEXT_LOCATION" == "on" ]; then
+        log "Start VPN"
+        start_or_restart
         exit 0
     fi
 
-    echo "$BASE_API_URL/location/change?token=$TOKEN&location=$NEXT_LOCATION"
-    curl "$BASE_API_URL/location/change?token=$TOKEN&location=$NEXT_LOCATION"
-    echo 'sleep 5 sec'
-    sleep 5
-    read_current_location
-    restart
-    rm -f $LOCATION_SWITCH_TMP
+    log NEXT_LOCATION=$NEXT_LOCATION
+    if [ ! "$RESULT_LOCATION" == "$NEXT_LOCATION" ]; then
+        log "$BASE_API_URL/location/change?token=$TOKEN&location=$NEXT_LOCATION"
+        curl "$BASE_API_URL/location/change?token=$TOKEN&location=$NEXT_LOCATION"
+        sleep 1
+        read_current_location
+    fi
+
+    start_or_restart
 }
 
-LOCATION_ITEMS="\
-    current Включить\
-    none Выключить\
-    frankfurt Германия\
-    stockholm Швеция\
-    tokyo Япония\
-    oregon США\
-    montreal Канада\
-    almaty Казахстан\
-    izmir Турция\
-    sydney Австралия\
-    amsterdam Нидерланды\
-    bangalore Индия\
-    singapore Сингапур\
-    london Великобритания\
-    warszawa Польша\
-    hongkong Гонконг\
-    dublin Ирландия\
-    bishkek Киргизия\
-    tbilisi Грузия\
-    helsinki Финляндия\
-    tallin Эстония\
-    mexico Мексика\
-    oslo Норвегия\
-    palermo Италия\
-    bangkok Таиланд\
-    bucharest Румыния\
-    lisbon Португалия\
-    pisek Чехия\
-    chisinau Молдова\
-    riga Латвия\
-    sofia Болгария\
-    madrid Испания\
-    zurich Швейцария\
-    athens Греция\
-    marseille Франция\
-    johannesburg ЮАР\
-    vienna Австрия\
-    seoul ЮжнаяКорея\
-    budapest Венгрия\
-    belgrade Сербия\
-    copenhagen Дания\
-    yerevan Армения\
-    dubai ОАЭ\
-    vilnius Литва\
-    cairo Египет\
-    zagreb Хорватия\
-    brussels Бельгия\
-    reykjavik Исландия\
-    minsk Беларусь\
-    skopje СевернаяМакедония\
-    ljubljana Словения\
-    santiago Чили\
-    hanoi Вьетнам\
-    baku Азербайджан\
-    kathmandu Непал\
-    karachi Пакистан\
-    ulaanbaatar Монголия\
-    bratislava Словакия\
-    limassol Кипр\
-    ballasalla ОстровМэн\
-    jakarta Индонезия\
-    manila Филиппины\
-    taipei Тайвань\
-    tashkent Узбекистан\
-    panama Панама\
-    guatemala Гватемала\
-    tunis Тунис\
-    sarajevo БоснияиГерцеговина\
-    lagos Нигерия\
-    luxembourg Люксембург\
-    bogota Колумбия\
-    dhaka Бангладеш\
-    riyadh СаудовскаяАравия\
-    manama Бахрейн\
-    muscat Оман\
-    lima Перу\
-    quito Эквадор\
-    auckland НоваяЗеландия\
-    montevideo Уругвай\
-    tirana Албания\
-    algiers Алжир\
-    nairob Кения\
-    phnom-penh Камбоджа\
-    buenos-aires Аргентина\
-    petah-tikva Израиль\
-    san-juan ПуэртоРико\
-    kuala-lumpur Малайзия\
-    san-jose КостаРика\
-    sao-paulo Бразилия\
-"
-
-echo `date` START >> ./$LOG_TMP
-main >> ./$LOG_TMP
-echo `date` END >> ./$LOG_TMP
+log `date` '============ START'
+main
+log `date` '------------ END \n'
