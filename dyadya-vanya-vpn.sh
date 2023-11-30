@@ -165,7 +165,7 @@ log() {
 }
 
 read_available_locations() {
-    TOO_OLD_LOCATIONS=$(find ./available_locations.tmp -mmin +120 -type f)
+    TOO_OLD_LOCATIONS=$(find ./available_locations.tmp -mmin +10080 -type f)
     if [ ! -z "$TOO_OLD_LOCATIONS" ]; then 
         rm -f $AVAILABLE_LOCATIONS_TMP
     fi
